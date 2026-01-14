@@ -9,40 +9,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # 1. Baixar código
     - name: Checkout code
       uses: actions/checkout@v4
 
+    # 2. Configurar Java 17 (Obrigatório para Android)
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        channel: 'stable'
-        flutter-version: '3.24.0'
-
+    # 3. Configurar Python
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
+    # 4. Instalar dependências (flet e fpdf)
     - name: Install Dependencies
       run: |
         pip install -r requirements.txt
 
-    - name: Accept Android Licenses
+    # 5. Aceitar licenças do Android preventivamente
+    # (Caso o SDK já esteja lá, isso garante que não trave)
+    - name: Setup Android SDK Licenses
       run: |
-        yes | flutter doctor --android-licenses
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
-    # CORREÇÃO AQUI: Removido o argumento que dava erro. 
-    # O Flet vai ler o requirements.txt sozinho.
+    # 6. O PULO DO GATO FINAL:
+    # O comando 'yes |' responde "y" para a pergunta de instalação do Flutter
+    # removemos a instalação manual do flutter antes para deixar o Flet decidir a versão
     - name: Build APK
       run: |
-        flet build apk --verbose
+        yes | flet build apk --verbose
 
+    # 7. Salvar o arquivo
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
