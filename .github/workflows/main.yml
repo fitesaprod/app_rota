@@ -9,46 +9,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Baixar código
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 2. Configurar Java 17 (Obrigatório para Android novo)
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '17'
 
-    # 3. Configurar Flutter
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
         channel: 'stable'
         flutter-version: '3.24.0'
 
-    # 4. Configurar Python
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    # 5. Instalar dependências (flet e fpdf)
     - name: Install Dependencies
       run: |
         pip install -r requirements.txt
 
-    # 6. O PULO DO GATO: Aceitar licenças do Android
     - name: Accept Android Licenses
       run: |
         yes | flutter doctor --android-licenses
 
-    # 7. Compilar APK (agora com as licenças aceitas)
+    # CORREÇÃO AQUI: Removido o argumento que dava erro. 
+    # O Flet vai ler o requirements.txt sozinho.
     - name: Build APK
       run: |
-        flet build apk --verbose --include-packages fpdf
+        flet build apk --verbose
 
-    # 8. Salvar o arquivo
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
