@@ -9,36 +9,46 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # Passo 1: Baixar o código do seu repositório
+    # 1. Baixar código
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Passo 2: Instalar o Python
+    # 2. Configurar Java 17 (Obrigatório para Android novo)
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    # 3. Configurar Flutter
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+        flutter-version: '3.24.0'
+
+    # 4. Configurar Python
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    # Passo 3: Instalar o Flutter (A CORREÇÃO ESTÁ AQUI)
-    # Isso instala o Flutter automaticamente para o Flet não precisar perguntar
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        channel: 'stable'
-        flutter-version: '3.24.0' # Versão estável compatível
-
-    # Passo 4: Instalar as bibliotecas do Python (Flet)
+    # 5. Instalar dependências (flet e fpdf)
     - name: Install Dependencies
       run: |
         pip install -r requirements.txt
 
-    # Passo 5: Gerar o APK
-    # O comando 'yes |' serve para confirmar automaticamente qualquer outra pergunta que aparecer
+    # 6. O PULO DO GATO: Aceitar licenças do Android
+    - name: Accept Android Licenses
+      run: |
+        yes | flutter doctor --android-licenses
+
+    # 7. Compilar APK (agora com as licenças aceitas)
     - name: Build APK
       run: |
-        yes | flet build apk --verbose
+        flet build apk --verbose --include-packages fpdf
 
-    # Passo 6: Salvar o APK para você baixar
+    # 8. Salvar o arquivo
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
