@@ -13,7 +13,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 2. Configurar Java 17 (Obrigatório para Android)
+    # 2. Configurar Java 17 (Essencial)
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
@@ -26,25 +26,30 @@ jobs:
       with:
         python-version: '3.11'
 
-    # 4. Instalar dependências (flet e fpdf)
+    # 4. Instalar bibliotecas
     - name: Install Dependencies
       run: |
+        pip install --upgrade pip
         pip install -r requirements.txt
 
-    # 5. Aceitar licenças do Android preventivamente
-    # (Caso o SDK já esteja lá, isso garante que não trave)
+    # 5. Aceitar licenças do Android
     - name: Setup Android SDK Licenses
       run: |
         yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
-    # 6. O PULO DO GATO FINAL:
-    # O comando 'yes |' responde "y" para a pergunta de instalação do Flutter
-    # removemos a instalação manual do flutter antes para deixar o Flet decidir a versão
+    # 6. Forçar a instalação do Flutter que o Flet quer (O Pulo do Gato)
+    # Rodamos um comando simples apenas para ele pedir a instalação e nós aceitarmos com 'yes'
+    # O "|| true" garante que o script continue mesmo se o comando reclamar de algo
+    - name: Pre-install Flutter Environment
+      run: |
+        yes | flet doctor || true
+
+    # 7. Compilar o APK (Agora o ambiente já está pronto)
     - name: Build APK
       run: |
-        yes | flet build apk --verbose
+        flet build apk --verbose
 
-    # 7. Salvar o arquivo
+    # 8. Salvar o arquivo
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
