@@ -1,44 +1,46 @@
-name: Gerar APK Android
+name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Baixar Código
+    # Passo 1: Baixar o código do seu repositório
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Configurar Python
+    # Passo 2: Instalar o Python
+    - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
 
-    - name: Instalar Dependências e Flet
+    # Passo 3: Instalar o Flutter (A CORREÇÃO ESTÁ AQUI)
+    # Isso instala o Flutter automaticamente para o Flet não precisar perguntar
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+        flutter-version: '3.24.0' # Versão estável compatível
+
+    # Passo 4: Instalar as bibliotecas do Python (Flet)
+    - name: Install Dependencies
       run: |
         pip install -r requirements.txt
 
-    - name: Configurar Ambiente Android
-      uses: actions/setup-java@v3
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-
-    - name: Instalar Flutter (Necessário para o Flet)
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.24.0'
-
-    - name: Construir o APK
+    # Passo 5: Gerar o APK
+    # O comando 'yes |' serve para confirmar automaticamente qualquer outra pergunta que aparecer
+    - name: Build APK
       run: |
-        flet build apk --verbose
+        yes | flet build apk --verbose
 
-    - name: Upload do APK (Salvar o arquivo)
+    # Passo 6: Salvar o APK para você baixar
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: App-Producao-APK
-        path: build/apk/app-release.apk
+        name: app-producao-apk
+        path: build/apk/*.apk
