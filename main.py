@@ -3,6 +3,7 @@ import sqlite3
 import datetime
 import os
 import sys
+import traceback
 
 # --- CONFIGURAÇÃO INICIAL E SEGURANÇA ---
 try:
@@ -13,27 +14,40 @@ except ImportError as e:
     erro_import = str(e)
 
 def main(page: ft.Page):
-    # --- ESTILO GERAL DO APP (TEMA CLEAN) ---
+    # --- 1. CONFIGURAÇÃO VISUAL PRELIMINAR (EVITA TELA BRANCA) ---
     page.title = "Fitesa Mobile"
     page.theme_mode = ft.ThemeMode.LIGHT
+    page.padding = 0
+    page.scroll = "hidden"
+    page.bgcolor = ft.Colors.GREY_50
     
-    # Tema Clean e Moderno
     page.theme = ft.Theme(
         color_scheme_seed=ft.Colors.INDIGO,
         visual_density=ft.VisualDensity.COMFORTABLE,
         use_material3=True 
     )
-    
-    # Ajustes de Layout para parecer App Nativo
-    page.padding = 0
-    page.scroll = "hidden"
-    page.bgcolor = ft.Colors.GREY_50 
 
-    # --- BANCO DE DADOS (ANDROID FRIENDLY) ---
+    # Força uma atualização inicial para garantir que a tela carregue
+    page.update()
+
+    # --- 2. DEFINIÇÃO DE CAMINHOS SEGUROS (ANDROID/PC) ---
+    # No Android, os.getcwd() é somente leitura. Usamos o HOME interno do app.
     try:
-        rota_base = os.environ.get("HOME", os.getcwd()) 
+        rota_base = os.environ.get("HOME")
+        if not rota_base:
+            rota_base = os.getcwd() # Fallback para PC
+            
+        # Nome do banco de dados
         db_path = os.path.join(rota_base, "fitesa_rotas.db")
-        
+    except Exception as e:
+        page.add(ft.Text(f"Erro Crítico de Caminho: {e}", color="red"))
+        return
+
+    # --- 3. INICIALIZAÇÃO DO BANCO DE DADOS (COM TRATAMENTO DE ERRO) ---
+    conn = None
+    cursor = None
+    
+    try:
         conn = sqlite3.connect(db_path, check_same_thread=False)
         cursor = conn.cursor()
         
@@ -43,7 +57,7 @@ def main(page: ft.Page):
         cursor.execute("CREATE TABLE IF NOT EXISTS historico (id INTEGER PRIMARY KEY, data TEXT, info TEXT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS rascunho (id TEXT PRIMARY KEY, valor TEXT)")
         
-        # --- ATUALIZAÇÃO PARA SUPORTAR ORDEM (DRAG & DROP) ---
+        # Verificação de coluna 'ordem' (Migração)
         try:
             cursor.execute("SELECT ordem FROM rotina_itens LIMIT 1")
         except sqlite3.OperationalError:
@@ -51,9 +65,29 @@ def main(page: ft.Page):
             conn.commit()
             
         conn.commit()
+        
     except Exception as e:
-        page.add(ft.Container(content=ft.Text(f"Erro DB: {e}", color="red"), padding=20))
-        return
+        # Se der erro no banco, mostra na tela em vez de travar (Tela Branca)
+        err_msg = traceback.format_exc()
+        page.clean()
+        page.add(
+            ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.ERROR, color="red", size=50),
+                    ft.Text("Erro ao iniciar Banco de Dados:", weight="bold"),
+                    ft.Text(str(e), color="red"),
+                    ft.Text(f"Caminho tentado: {db_path}", size=12),
+                    ft.ExpansionTile(
+                        title=ft.Text("Detalhes Técnicos"),
+                        controls=[ft.Text(err_msg, size=10, font_family="monospace")]
+                    )
+                ]),
+                padding=20,
+                alignment=ft.alignment.center
+            )
+        )
+        page.update()
+        return # Para a execução aqui se não tiver DB
 
     # --- COMPONENTES VISUAIS (WIDGETS PERSONALIZADOS) ---
     
@@ -79,35 +113,40 @@ def main(page: ft.Page):
             margin=ft.margin.only(bottom=15, left=15, right=15)
         )
 
-    # Variáveis globais
+    # Variáveis globais de estado
     user_data = {"fotos": {}}
     current_nav_index = 0
 
     # --- FUNÇÕES DE LÓGICA ---
     def save_draft(key, value):
         try:
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO rascunho (id, valor) VALUES (?, ?)", (key, value))
-            conn.commit()
+            if conn:
+                local_cursor = conn.cursor()
+                local_cursor.execute("INSERT OR REPLACE INTO rascunho (id, valor) VALUES (?, ?)", (key, str(value)))
+                conn.commit()
         except: pass
 
     def get_draft(key):
         try:
-            res = conn.cursor().execute("SELECT valor FROM rascunho WHERE id = ?", (key,)).fetchone()
-            return res[0] if res else ""
+            if conn:
+                res = conn.cursor().execute("SELECT valor FROM rascunho WHERE id = ?", (key,)).fetchone()
+                return res[0] if res else ""
+            return ""
         except: return ""
 
     # --- SELETORES E CAMPOS ---
     def on_date_change(e):
-        txt_data.value = date_picker.value.strftime("%d/%m/%Y")
-        save_draft("data", txt_data.value)
-        page.update()
+        if date_picker.value:
+            txt_data.value = date_picker.value.strftime("%d/%m/%Y")
+            save_draft("data", txt_data.value)
+            page.update()
 
     date_picker = ft.DatePicker(
         on_change=on_date_change,
         first_date=datetime.datetime(2023, 1, 1),
         last_date=datetime.datetime(2030, 12, 31),
     )
+    # Importante: Adicionar overlay depois garante que a page existe
     page.overlay.append(date_picker)
 
     txt_data = ft.TextField(
@@ -129,10 +168,11 @@ def main(page: ft.Page):
     def on_file_result(e: ft.FilePickerResultEvent):
         if e.files:
             secao = page.session.get("current_section")
-            user_data["fotos"][secao] = e.files[0].path
-            page.snack_bar = ft.SnackBar(ft.Text(f"Foto salva!"), bgcolor="green")
-            page.open(page.snack_bar)
-            page.update()
+            if secao:
+                user_data["fotos"][secao] = e.files[0].path
+                page.snack_bar = ft.SnackBar(ft.Text(f"Foto salva!"), bgcolor="green")
+                page.open(page.snack_bar)
+                page.update()
 
     file_picker = ft.FilePicker(on_result=on_file_result)
     page.overlay.append(file_picker)
@@ -141,7 +181,7 @@ def main(page: ft.Page):
     def gerar_pdf(e):
         try:
             if not fpdf_disponivel:
-                raise Exception("Biblioteca FPDF não instalada.")
+                raise Exception("Biblioteca FPDF não instalada ou não suportada.")
             
             pdf = FPDF()
             pdf.add_page()
@@ -162,8 +202,8 @@ def main(page: ft.Page):
             pdf.ln(5)
             
             # --- LOOP PARA PEGAR OS ITENS (COM ORDEM CORRETA) ---
-            cursor = conn.cursor()
-            itens = cursor.execute("SELECT titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
+            local_cursor = conn.cursor()
+            itens = local_cursor.execute("SELECT titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
             
             if not itens:
                 pdf.cell(0, 10, txt="Nenhum item de verificação cadastrado.", ln=True)
@@ -186,20 +226,28 @@ def main(page: ft.Page):
 
             # Salvar Arquivo
             data_fmt = txt_data.value.replace("/", "_")
-            nome_arq = f"{data_fmt}_{dd_turma.value}.pdf"
+            turma_fmt = str(dd_turma.value).replace(" ", "_") if dd_turma.value else "GERAL"
+            nome_arq = f"{data_fmt}_{turma_fmt}.pdf"
+            
+            # Caminho completo seguro
             caminho_pdf = os.path.join(rota_base, nome_arq)
             
             pdf.output(caminho_pdf)
             
-            conn.cursor().execute("INSERT INTO historico (data, info) VALUES (?, ?)", (txt_data.value, nome_arq))
+            local_cursor.execute("INSERT INTO historico (data, info) VALUES (?, ?)", (txt_data.value, nome_arq))
             conn.commit()
             
-            page.snack_bar = ft.SnackBar(ft.Text(f"PDF gerado com sucesso!\nSalvo em: {caminho_pdf}"), bgcolor="green")
+            page.snack_bar = ft.SnackBar(ft.Text(f"PDF salvo em: {caminho_pdf}"), bgcolor="green")
             page.open(page.snack_bar)
             page.update()
             
         except Exception as ex:
-            page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao gerar PDF: {ex}"), bgcolor="red")
+            msg_erro = str(ex)
+            # Tratamento especial para erro de permissão
+            if "Permission denied" in msg_erro:
+                msg_erro = "Sem permissão de escrita. Verifique as configurações do Android."
+                
+            page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao gerar PDF: {msg_erro}"), bgcolor="red")
             page.open(page.snack_bar)
             page.update()
 
@@ -231,7 +279,8 @@ def main(page: ft.Page):
         pass_input = ft.TextField(label="Senha", password=True, can_reveal_password=True, border_radius=10, prefix_icon=ft.Icons.LOCK)
         
         def login_click(e):
-            if user_input.value == "admin" and pass_input.value == "admin":
+            # Login simples para exemplo
+            if (user_input.value == "admin" and pass_input.value == "admin") or (user_input.value == "lider" and pass_input.value == "123"):
                 page.navigation_bar.visible = True
                 show_menu()
             else:
@@ -267,6 +316,7 @@ def main(page: ft.Page):
                 padding=40
             )
         )
+        page.update()
 
     def show_menu():
         nonlocal current_nav_index
@@ -319,6 +369,7 @@ def main(page: ft.Page):
                 )
             ])
         )
+        page.update()
 
     def show_rota(e=None):
         nonlocal current_nav_index
@@ -327,11 +378,11 @@ def main(page: ft.Page):
         page.navigation_bar.selected_index = 1
         
         try:
-            cursor = conn.cursor()
-            dd_lider.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='lider'").fetchall()]
-            dd_maquina.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='maquina'").fetchall()]
-            dd_turma.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='turma'").fetchall()]
-            dd_rota.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='rota'").fetchall()]
+            local_cursor = conn.cursor()
+            dd_lider.options = [ft.dropdown.Option(r[0]) for r in local_cursor.execute("SELECT nome FROM opcoes WHERE tipo='lider'").fetchall()]
+            dd_maquina.options = [ft.dropdown.Option(r[0]) for r in local_cursor.execute("SELECT nome FROM opcoes WHERE tipo='maquina'").fetchall()]
+            dd_turma.options = [ft.dropdown.Option(r[0]) for r in local_cursor.execute("SELECT nome FROM opcoes WHERE tipo='turma'").fetchall()]
+            dd_rota.options = [ft.dropdown.Option(r[0]) for r in local_cursor.execute("SELECT nome FROM opcoes WHERE tipo='rota'").fetchall()]
             
             dd_lider.value = get_draft("lider")
             dd_maquina.value = get_draft("maquina")
@@ -340,7 +391,7 @@ def main(page: ft.Page):
 
             # Lista agora usa a ORDEM salva no banco
             lista_itens = ft.Column(spacing=15)
-            for r in cursor.execute("SELECT titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall():
+            for r in local_cursor.execute("SELECT titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall():
                 titulo = r[0]
                 lista_itens.controls.append(
                     ft.Container(
@@ -359,7 +410,7 @@ def main(page: ft.Page):
                 )
 
         except Exception as e:
-            page.add(ft.Text(f"Erro: {e}"))
+            page.add(ft.Text(f"Erro ao carregar rota: {e}", color="red"))
             return
 
         def limpar_campos(e):
@@ -425,10 +476,12 @@ def main(page: ft.Page):
                 ft.Container(height=80) 
             ], scroll="auto", expand=True)
         )
+        page.update()
 
     def check_admin_pass(e=None):
         pw = ft.TextField(label="Senha", password=True, text_align="center", border_radius=10)
         def validar(e):
+            # Senha de exemplo
             if pw.value == "production26":
                 dlg.open = False
                 page.update()
@@ -462,13 +515,13 @@ def main(page: ft.Page):
         def cadastrar(e):
             if not novo_item_input.value or not tipo_item_dd.value: return
             
-            # Pega a ultima ordem para adicionar no final
+            local_cursor = conn.cursor()
             if tipo_item_dd.value == "rotina":
-                res = conn.cursor().execute("SELECT MAX(ordem) FROM rotina_itens").fetchone()
+                res = local_cursor.execute("SELECT MAX(ordem) FROM rotina_itens").fetchone()
                 nova_ordem = (res[0] if res and res[0] is not None else 0) + 1
-                conn.cursor().execute("INSERT INTO rotina_itens (titulo, ordem) VALUES (?, ?)", (novo_item_input.value, nova_ordem))
+                local_cursor.execute("INSERT INTO rotina_itens (titulo, ordem) VALUES (?, ?)", (novo_item_input.value, nova_ordem))
             else:
-                conn.cursor().execute("INSERT INTO opcoes (tipo, nome) VALUES (?, ?)", (tipo_item_dd.value, novo_item_input.value))
+                local_cursor.execute("INSERT INTO opcoes (tipo, nome) VALUES (?, ?)", (tipo_item_dd.value, novo_item_input.value))
             conn.commit()
             novo_item_input.value = ""
             page.snack_bar = ft.SnackBar(ft.Text("Item adicionado!"), bgcolor="green")
@@ -476,51 +529,44 @@ def main(page: ft.Page):
             show_admin()
 
         def deletar(tabela, id_item):
-            cursor.execute(f"DELETE FROM {tabela} WHERE id=?", (id_item,))
+            conn.cursor().execute(f"DELETE FROM {tabela} WHERE id=?", (id_item,))
             conn.commit()
             show_admin()
 
-        # --- LÓGICA DE DRAG & DROP INTELIGENTE ---
+        # --- LÓGICA DE DRAG & DROP ---
         def drag_accept(e):
             try:
-                # Recebe IDs como String e converte
                 src_id = int(e.data)
                 tgt_id = int(e.control.data)
-            except:
-                return # Se der erro na conversão, aborta
+            except: return
                 
             if src_id == tgt_id: return
 
-            rows = cursor.execute("SELECT id FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
+            local_cursor = conn.cursor()
+            rows = local_cursor.execute("SELECT id FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
             ids_atuais = [r[0] for r in rows]
             
             if src_id in ids_atuais and tgt_id in ids_atuais:
                 src_index = ids_atuais.index(src_id)
                 tgt_index = ids_atuais.index(tgt_id)
-                
-                # Remove da posição atual
                 ids_atuais.remove(src_id)
                 
-                # CORREÇÃO: Verifica se estamos movendo para baixo ou para cima
+                # Ajuste de inserção
                 insert_index = ids_atuais.index(tgt_id)
-                
                 if src_index < tgt_index:
-                    # Movendo para baixo: insere DEPOIS do alvo
                     ids_atuais.insert(insert_index + 1, src_id)
                 else:
-                    # Movendo para cima: insere ANTES do alvo
                     ids_atuais.insert(insert_index, src_id)
                 
-                # Atualiza ordem no banco
                 for idx, item_id in enumerate(ids_atuais):
-                    cursor.execute("UPDATE rotina_itens SET ordem = ? WHERE id = ?", (idx, item_id))
+                    local_cursor.execute("UPDATE rotina_itens SET ordem = ? WHERE id = ?", (idx, item_id))
                 conn.commit()
                 show_admin()
 
         def lista_simples(tipo):
             if tipo == "rotina":
                 items_col = ft.Column(spacing=5)
-                dados = cursor.execute("SELECT id, titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
+                dados = conn.cursor().execute("SELECT id, titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
                 
                 for r in dados:
                     item_id = r[0]
@@ -540,14 +586,14 @@ def main(page: ft.Page):
                         group="rotina_group",
                         content=card_content,
                         content_when_dragging=ft.Container(content=card_content, opacity=0.5),
-                        data=item_id, # Passa o ID aqui (Flet converte pra string)
+                        data=item_id,
                     )
                     
                     target = ft.DragTarget(
                         group="rotina_group",
                         content=draggable,
                         on_accept=drag_accept,
-                        data=item_id, # ID do alvo
+                        data=item_id,
                     )
                     
                     items_col.controls.append(target)
@@ -557,7 +603,7 @@ def main(page: ft.Page):
                 tabela = "opcoes"
                 sql = f"SELECT id, nome FROM {tabela} WHERE tipo='{tipo}'"
                 items = ft.Column(spacing=5)
-                for r in cursor.execute(sql).fetchall():
+                for r in conn.cursor().execute(sql).fetchall():
                     items.controls.append(
                         ft.Container(
                             content=ft.Row([
@@ -603,8 +649,10 @@ def main(page: ft.Page):
                 expand=True
             )
         )
+        page.update()
 
-    # Inicia no Login
+    # Inicia no Login e força o update
     show_login()
+    page.update()
 
 ft.app(target=main)
