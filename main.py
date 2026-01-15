@@ -2,49 +2,102 @@ import flet as ft
 import sqlite3
 import datetime
 import os
-from fpdf import FPDF
+import sys
 
-# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
-def init_db():
-    conn = sqlite3.connect("fitesa_rotas.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS opcoes (id INTEGER PRIMARY KEY, tipo TEXT, nome TEXT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS rotina_itens (id INTEGER PRIMARY KEY, titulo TEXT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS historico (id INTEGER PRIMARY KEY, data TEXT, info TEXT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS rascunho (id TEXT PRIMARY KEY, valor TEXT)")
-    conn.commit()
-    return conn
-
-conn = init_db()
+# --- CONFIGURAÇÃO INICIAL E SEGURANÇA ---
+try:
+    from fpdf import FPDF
+    fpdf_disponivel = True
+except ImportError as e:
+    fpdf_disponivel = False
+    erro_import = str(e)
 
 def main(page: ft.Page):
-    page.title = "Sistema de Rotas Fitesa"
+    # --- ESTILO GERAL DO APP (TEMA CLEAN) ---
+    page.title = "Fitesa Mobile"
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.scroll = "auto"
+    
+    # Tema Clean e Moderno
+    page.theme = ft.Theme(
+        color_scheme_seed=ft.Colors.INDIGO,
+        visual_density=ft.VisualDensity.COMFORTABLE,
+        use_material3=True 
+    )
+    
+    # Ajustes de Layout para parecer App Nativo
     page.padding = 0
+    page.scroll = "hidden"
+    page.bgcolor = ft.Colors.GREY_50 
 
-    # --- VARIÁVEIS DE ESTADO ---
-    user_data = {"fotos": {}}
-    current_nav_index = 0 
-
-    # --- FUNÇÕES AUXILIARES ---
-    def save_draft(key, value):
+    # --- BANCO DE DADOS (ANDROID FRIENDLY) ---
+    try:
+        rota_base = os.environ.get("HOME", os.getcwd()) 
+        db_path = os.path.join(rota_base, "fitesa_rotas.db")
+        
+        conn = sqlite3.connect(db_path, check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO rascunho (id, valor) VALUES (?, ?)", (key, value))
+        
+        # Tabelas básicas
+        cursor.execute("CREATE TABLE IF NOT EXISTS opcoes (id INTEGER PRIMARY KEY, tipo TEXT, nome TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS rotina_itens (id INTEGER PRIMARY KEY, titulo TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS historico (id INTEGER PRIMARY KEY, data TEXT, info TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS rascunho (id TEXT PRIMARY KEY, valor TEXT)")
+        
+        # --- ATUALIZAÇÃO PARA SUPORTAR ORDEM (DRAG & DROP) ---
+        try:
+            cursor.execute("SELECT ordem FROM rotina_itens LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE rotina_itens ADD COLUMN ordem INTEGER DEFAULT 0")
+            conn.commit()
+            
         conn.commit()
+    except Exception as e:
+        page.add(ft.Container(content=ft.Text(f"Erro DB: {e}", color="red"), padding=20))
+        return
 
-    def get_draft(key):
-        res = conn.cursor().execute("SELECT valor FROM rascunho WHERE id = ?", (key,)).fetchone()
-        return res[0] if res else ""
-
-    def container_campo(control):
+    # --- COMPONENTES VISUAIS (WIDGETS PERSONALIZADOS) ---
+    
+    def criar_card(titulo, conteudo, icone=None):
         return ft.Container(
-            content=control,
-            padding=ft.padding.only(left=10, right=10, top=5, bottom=5),
-            width=page.width
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(icone, color=ft.Colors.PRIMARY, size=20) if icone else ft.Container(),
+                    ft.Text(titulo, weight="bold", size=16, color=ft.Colors.PRIMARY),
+                ], spacing=10),
+                ft.Divider(height=10, color="transparent"),
+                conteudo
+            ], spacing=5),
+            bgcolor="white",
+            padding=20,
+            border_radius=15,
+            shadow=ft.BoxShadow(
+                spread_radius=1,
+                blur_radius=10,
+                color=ft.Colors.BLUE_GREY_50,
+                offset=ft.Offset(0, 4),
+            ),
+            margin=ft.margin.only(bottom=15, left=15, right=15)
         )
 
-    # --- COMPONENTES DE DATA ---
+    # Variáveis globais
+    user_data = {"fotos": {}}
+    current_nav_index = 0
+
+    # --- FUNÇÕES DE LÓGICA ---
+    def save_draft(key, value):
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO rascunho (id, valor) VALUES (?, ?)", (key, value))
+            conn.commit()
+        except: pass
+
+    def get_draft(key):
+        try:
+            res = conn.cursor().execute("SELECT valor FROM rascunho WHERE id = ?", (key,)).fetchone()
+            return res[0] if res else ""
+        except: return ""
+
+    # --- SELETORES E CAMPOS ---
     def on_date_change(e):
         txt_data.value = date_picker.value.strftime("%d/%m/%Y")
         save_draft("data", txt_data.value)
@@ -58,26 +111,27 @@ def main(page: ft.Page):
     page.overlay.append(date_picker)
 
     txt_data = ft.TextField(
-        label="Data", 
-        value=get_draft("data") or datetime.datetime.now().strftime("%d/%m/%Y"), 
+        label="Data Selecionada",
+        value=get_draft("data") or datetime.datetime.now().strftime("%d/%m/%Y"),
         read_only=True,
-        on_focus=lambda _: page.open(date_picker),
-        icon=ft.Icons.CALENDAR_MONTH
+        on_focus=lambda _: date_picker.pick_date(),
+        border_radius=10,
+        prefix_icon=ft.Icons.CALENDAR_MONTH,
+        text_size=16
     )
 
-    # --- DROPDOWNS ---
-    dd_lider = ft.Dropdown(label="Líder", expand=True, on_change=lambda e: save_draft("lider", e.control.value))
-    dd_maquina = ft.Dropdown(label="Máquina", expand=True, on_change=lambda e: save_draft("maquina", e.control.value))
-    dd_turma = ft.Dropdown(label="Turma", expand=True, on_change=lambda e: save_draft("turma", e.control.value))
-    dd_rota = ft.Dropdown(label="Rota", expand=True, on_change=lambda e: save_draft("rota", e.control.value))
+    dd_lider = ft.Dropdown(label="Selecione o Líder", border_radius=10, expand=True, on_change=lambda e: save_draft("lider", e.control.value))
+    dd_maquina = ft.Dropdown(label="Selecione a Máquina", border_radius=10, expand=True, on_change=lambda e: save_draft("maquina", e.control.value))
+    dd_turma = ft.Dropdown(label="Selecione a Turma", border_radius=10, expand=True, on_change=lambda e: save_draft("turma", e.control.value))
+    dd_rota = ft.Dropdown(label="Selecione a Rota", border_radius=10, expand=True, on_change=lambda e: save_draft("rota", e.control.value))
 
     # --- CÂMERA ---
     def on_file_result(e: ft.FilePickerResultEvent):
         if e.files:
             secao = page.session.get("current_section")
             user_data["fotos"][secao] = e.files[0].path
-            page.snack_bar = ft.SnackBar(ft.Text(f"Foto salva para {secao}"))
-            page.snack_bar.open = True
+            page.snack_bar = ft.SnackBar(ft.Text(f"Foto salva!"), bgcolor="green")
+            page.open(page.snack_bar)
             page.update()
 
     file_picker = ft.FilePicker(on_result=on_file_result)
@@ -85,25 +139,69 @@ def main(page: ft.Page):
 
     # --- PDF ---
     def gerar_pdf(e):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, txt="RELATÓRIO DE ROTA FITESA", ln=True, align='C')
-        pdf.set_font("Arial", size=12)
-        pdf.ln(10)
-        pdf.cell(200, 10, txt=f"Data: {txt_data.value} | Lider: {dd_lider.value}", ln=True)
-        pdf.cell(200, 10, txt=f"Maq: {dd_maquina.value} | Turma: {dd_turma.value}", ln=True)
-        
-        data_fmt = txt_data.value.replace("/", "_")
-        nome_arq = f"{data_fmt}_{dd_turma.value}_{dd_lider.value}.pdf"
-        pdf.output(nome_arq)
-        
-        conn.cursor().execute("INSERT INTO historico (data, info) VALUES (?, ?)", (txt_data.value, nome_arq))
-        conn.commit()
-        
-        page.snack_bar = ft.SnackBar(ft.Text(f"Gerado: {nome_arq}"))
-        page.snack_bar.open = True
-        page.update()
+        try:
+            if not fpdf_disponivel:
+                raise Exception("Biblioteca FPDF não instalada.")
+            
+            pdf = FPDF()
+            pdf.add_page()
+            
+            # Cabeçalho
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(0, 10, txt="RELATORIO DE ROTA FITESA", ln=True, align='C')
+            pdf.set_font("Arial", size=12)
+            pdf.ln(5)
+            
+            pdf.cell(0, 10, txt=f"Data: {txt_data.value}", ln=True)
+            pdf.cell(0, 10, txt=f"Lider: {dd_lider.value} | Turma: {dd_turma.value}", ln=True)
+            pdf.cell(0, 10, txt=f"Maquina: {dd_maquina.value} | Rota: {dd_rota.value}", ln=True)
+            pdf.ln(5)
+            
+            # Linha divisória
+            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+            pdf.ln(5)
+            
+            # --- LOOP PARA PEGAR OS ITENS (COM ORDEM CORRETA) ---
+            cursor = conn.cursor()
+            itens = cursor.execute("SELECT titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
+            
+            if not itens:
+                pdf.cell(0, 10, txt="Nenhum item de verificação cadastrado.", ln=True)
+            else:
+                for item in itens:
+                    titulo = item[0]
+                    obs = get_draft(f"obs_{titulo}")
+                    
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.cell(0, 8, txt=f"- {titulo}", ln=True)
+                    
+                    if obs:
+                        pdf.set_font("Arial", size=11)
+                        pdf.multi_cell(0, 6, txt=f"  Obs: {obs}")
+                    else:
+                        pdf.set_font("Arial", 'I', 10)
+                        pdf.cell(0, 6, txt="  (Sem observacoes)", ln=True)
+                    
+                    pdf.ln(2)
+
+            # Salvar Arquivo
+            data_fmt = txt_data.value.replace("/", "_")
+            nome_arq = f"{data_fmt}_{dd_turma.value}.pdf"
+            caminho_pdf = os.path.join(rota_base, nome_arq)
+            
+            pdf.output(caminho_pdf)
+            
+            conn.cursor().execute("INSERT INTO historico (data, info) VALUES (?, ?)", (txt_data.value, nome_arq))
+            conn.commit()
+            
+            page.snack_bar = ft.SnackBar(ft.Text(f"PDF gerado com sucesso!\nSalvo em: {caminho_pdf}"), bgcolor="green")
+            page.open(page.snack_bar)
+            page.update()
+            
+        except Exception as ex:
+            page.snack_bar = ft.SnackBar(ft.Text(f"Erro ao gerar PDF: {ex}"), bgcolor="red")
+            page.open(page.snack_bar)
+            page.update()
 
     # --- NAVEGAÇÃO ---
     def on_nav_change(e):
@@ -113,12 +211,15 @@ def main(page: ft.Page):
         elif index == 2: check_admin_pass()
 
     page.navigation_bar = ft.NavigationBar(
+        selected_index=0,
         destinations=[
-            ft.NavigationBarDestination(icon=ft.Icons.HOME, label="Início"),
-            ft.NavigationBarDestination(icon=ft.Icons.ROUTE, label="Rota"),
-            ft.NavigationBarDestination(icon=ft.Icons.SETTINGS, label="Admin"),
+            ft.NavigationBarDestination(icon=ft.Icons.HOME_OUTLINED, selected_icon=ft.Icons.HOME, label="Início"),
+            ft.NavigationBarDestination(icon=ft.Icons.ASSIGNMENT_OUTLINED, selected_icon=ft.Icons.ASSIGNMENT, label="Rota"),
+            ft.NavigationBarDestination(icon=ft.Icons.ADMIN_PANEL_SETTINGS_OUTLINED, selected_icon=ft.Icons.ADMIN_PANEL_SETTINGS, label="Admin"),
         ],
         on_change=on_nav_change,
+        bgcolor="white",
+        elevation=10,
         visible=False
     )
 
@@ -126,26 +227,45 @@ def main(page: ft.Page):
     def show_login(e=None):
         page.clean()
         page.navigation_bar.visible = False
-        user_input = ft.TextField(label="Usuário", value="admin")
-        pass_input = ft.TextField(label="Senha", password=True, can_reveal_password=True, value="admin")
+        user_input = ft.TextField(label="Usuário", border_radius=10, prefix_icon=ft.Icons.PERSON)
+        pass_input = ft.TextField(label="Senha", password=True, can_reveal_password=True, border_radius=10, prefix_icon=ft.Icons.LOCK)
         
         def login_click(e):
             if user_input.value == "admin" and pass_input.value == "admin":
                 page.navigation_bar.visible = True
                 show_menu()
             else:
-                page.snack_bar = ft.SnackBar(ft.Text("Login incorreto"))
-                page.snack_bar.open = True
+                page.snack_bar = ft.SnackBar(ft.Text("Dados incorretos"), bgcolor="red")
+                page.open(page.snack_bar)
                 page.update()
 
         page.add(
-            ft.Column([
-                ft.Container(height=50),
-                ft.Text("Login Fitesa", size=30, weight="bold"),
-                container_campo(user_input),
-                container_campo(pass_input),
-                ft.ElevatedButton("Entrar", on_click=login_click, width=200)
-            ], horizontal_alignment="center")
+            ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.FACTORY, size=80, color=ft.Colors.PRIMARY),
+                    ft.Text("Fitesa", size=30, weight="bold", color=ft.Colors.PRIMARY),
+                    ft.Text("Gestão de Produção", size=16, color="grey"),
+                    ft.Divider(height=40, color="transparent"),
+                    user_input,
+                    ft.Divider(height=10, color="transparent"),
+                    pass_input,
+                    ft.Divider(height=30, color="transparent"),
+                    ft.ElevatedButton(
+                        "ACESSAR SISTEMA", 
+                        on_click=login_click, 
+                        width=300, 
+                        height=50,
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=10),
+                            bgcolor=ft.Colors.PRIMARY,
+                            color="white"
+                        )
+                    )
+                ], horizontal_alignment="center"),
+                alignment=ft.alignment.center,
+                expand=True,
+                padding=40
+            )
         )
 
     def show_menu():
@@ -153,14 +273,51 @@ def main(page: ft.Page):
         current_nav_index = 0
         page.clean()
         page.navigation_bar.selected_index = 0
+        
+        header = ft.Container(
+            content=ft.Column([
+                ft.Text("Olá, Lider", size=28, weight="bold", color="white"),
+                ft.Text("Tenha uma ótima rota!", size=14, color="white70")
+            ]),
+            bgcolor=ft.Colors.PRIMARY,
+            padding=ft.padding.only(left=20, right=20, top=60, bottom=30),
+            border_radius=ft.border_radius.only(bottom_left=30, bottom_right=30),
+            shadow=ft.BoxShadow(blur_radius=15, color=ft.Colors.BLUE_GREY_200)
+        )
+
+        btn_rota = ft.Container(
+            content=ft.Column([
+                ft.Icon(ft.Icons.PLAY_CIRCLE_FILL, size=50, color=ft.Colors.PRIMARY),
+                ft.Text("Iniciar Nova Rota", weight="bold", size=16),
+                ft.Text("Apontamento diário", size=12, color="grey")
+            ], alignment="center", horizontal_alignment="center"),
+            bgcolor="white", padding=20, border_radius=20,
+            shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.GREY_200),
+            on_click=lambda _: show_rota(),
+            expand=True
+        )
+
+        btn_config = ft.Container(
+            content=ft.Column([
+                ft.Icon(ft.Icons.SETTINGS, size=50, color=ft.Colors.ORANGE),
+                ft.Text("Configurações", weight="bold", size=16),
+                ft.Text("Gerenciar Itens", size=12, color="grey")
+            ], alignment="center", horizontal_alignment="center"),
+            bgcolor="white", padding=20, border_radius=20,
+            shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.GREY_200),
+            on_click=lambda _: check_admin_pass(),
+            expand=True
+        )
+
         page.add(
-            ft.AppBar(title=ft.Text("Início"), bgcolor=ft.Colors.BLUE_GREY_100, automatically_imply_leading=False),
             ft.Column([
-                ft.Container(height=40),
-                ft.Icon(ft.Icons.DIRECTIONS_RUN, size=80),
-                container_campo(ft.ElevatedButton("Realizar Rota", icon=ft.Icons.PLAY_ARROW, on_click=lambda _: show_rota(), height=60)),
-                container_campo(ft.ElevatedButton("Configurações", icon=ft.Icons.SETTINGS, on_click=lambda _: check_admin_pass(), height=60)),
-            ], horizontal_alignment="center")
+                header,
+                ft.Container(
+                    content=ft.Row([btn_rota, btn_config], spacing=20),
+                    padding=20,
+                    margin=ft.margin.only(top=-20) 
+                )
+            ])
         )
 
     def show_rota(e=None):
@@ -169,75 +326,123 @@ def main(page: ft.Page):
         page.clean()
         page.navigation_bar.selected_index = 1
         
-        cursor = conn.cursor()
-        dd_lider.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='lider'").fetchall()]
-        dd_maquina.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='maquina'").fetchall()]
-        dd_turma.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='turma'").fetchall()]
-        dd_rota.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='rota'").fetchall()]
-        
-        dd_lider.value = get_draft("lider")
-        dd_maquina.value = get_draft("maquina")
-        dd_turma.value = get_draft("turma")
-        dd_rota.value = get_draft("rota")
+        try:
+            cursor = conn.cursor()
+            dd_lider.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='lider'").fetchall()]
+            dd_maquina.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='maquina'").fetchall()]
+            dd_turma.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='turma'").fetchall()]
+            dd_rota.options = [ft.dropdown.Option(r[0]) for r in cursor.execute("SELECT nome FROM opcoes WHERE tipo='rota'").fetchall()]
+            
+            dd_lider.value = get_draft("lider")
+            dd_maquina.value = get_draft("maquina")
+            dd_turma.value = get_draft("turma")
+            dd_rota.value = get_draft("rota")
 
-        itens_ui = ft.Column()
-        for r in cursor.execute("SELECT titulo FROM rotina_itens").fetchall():
-            titulo = r[0]
-            itens_ui.controls.append(
-                container_campo(
-                    ft.Column([
-                        ft.Text(titulo, weight="bold"),
-                        ft.ElevatedButton("Câmera", icon=ft.Icons.CAMERA_ALT, on_click=lambda e, t=titulo: (page.session.set("current_section", t), file_picker.pick_files(capture=True))),
-                        ft.TextField(label="Observação", multiline=True, on_change=lambda e, t=titulo: save_draft(f"obs_{t}", e.control.value), value=get_draft(f"obs_{titulo}"))
-                    ])
+            # Lista agora usa a ORDEM salva no banco
+            lista_itens = ft.Column(spacing=15)
+            for r in cursor.execute("SELECT titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall():
+                titulo = r[0]
+                lista_itens.controls.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color="grey"),
+                                ft.Text(titulo, weight="w500", size=15),
+                            ]),
+                            ft.Row([
+                                ft.IconButton(ft.Icons.CAMERA_ALT, icon_color=ft.Colors.PRIMARY, on_click=lambda e, t=titulo: (page.session.set("current_section", t), file_picker.pick_files(capture=True))),
+                                ft.TextField(hint_text="Observação...", text_size=13, expand=True, border_radius=8, content_padding=10, on_change=lambda e, t=titulo: save_draft(f"obs_{t}", e.control.value), value=get_draft(f"obs_{titulo}"))
+                            ])
+                        ]),
+                        bgcolor="white", padding=15, border_radius=10, border=ft.border.all(1, ft.Colors.GREY_200)
+                    )
                 )
-            )
+
+        except Exception as e:
+            page.add(ft.Text(f"Erro: {e}"))
+            return
+
+        def limpar_campos(e):
+            conn.cursor().execute("DELETE FROM rascunho")
+            conn.commit()
+            page.snack_bar = ft.SnackBar(ft.Text("Todos os campos foram limpos!"))
+            page.open(page.snack_bar)
+            show_rota()
 
         page.add(
-            ft.AppBar(title=ft.Text("Realizar Rota"), bgcolor=ft.Colors.BLUE_GREY_100, automatically_imply_leading=False),
-            container_campo(ft.Text("1. Identificação", size=20, weight="bold")),
-            container_campo(txt_data), container_campo(dd_lider), container_campo(dd_maquina), container_campo(dd_turma), container_campo(dd_rota),
-            ft.Divider(),
-            container_campo(ft.Text("2. Rotina", size=20, weight="bold")),
-            itens_ui,
-            container_campo(ft.ElevatedButton("Gerar PDF", on_click=gerar_pdf, bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, height=50)),
-            ft.Container(height=60)
+            ft.Container(
+                content=ft.Row([
+                    ft.Text("Nova Rota", size=20, weight="bold"),
+                    ft.Icon(ft.Icons.ASSIGNMENT, color=ft.Colors.PRIMARY)
+                ], alignment="spaceBetween"),
+                padding=ft.padding.only(left=20, right=20, top=40, bottom=10),
+                bgcolor="white"
+            ),
+            ft.Column([
+                criar_card("1. Identificação", ft.Column([
+                    txt_data, dd_lider, dd_maquina, dd_turma, dd_rota
+                ]), icone=ft.Icons.PERSON_SEARCH),
+                
+                ft.Container(
+                    content=ft.Text("2. Checklist de Rotina", weight="bold", size=16, color=ft.Colors.PRIMARY),
+                    padding=ft.padding.only(left=25, bottom=5)
+                ),
+                
+                ft.Container(content=lista_itens, padding=ft.padding.only(left=15, right=15)),
+                
+                ft.Container(height=20),
+                
+                ft.Container(
+                    content=ft.Column([
+                        ft.ElevatedButton(
+                            "Limpar Campos",
+                            icon=ft.Icons.CLEANING_SERVICES,
+                            on_click=limpar_campos,
+                            style=ft.ButtonStyle(
+                                bgcolor=ft.Colors.RED_400,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=10),
+                                padding=15
+                            ),
+                            width=page.width
+                        ),
+                        ft.Container(height=10),
+                        ft.ElevatedButton(
+                            "Finalizar e Gerar PDF", 
+                            icon=ft.Icons.PICTURE_AS_PDF,
+                            on_click=gerar_pdf,
+                            style=ft.ButtonStyle(
+                                bgcolor=ft.Colors.GREEN,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=10),
+                                padding=20
+                            ),
+                            width=page.width
+                        )
+                    ]),
+                    padding=20
+                ),
+                ft.Container(height=80) 
+            ], scroll="auto", expand=True)
         )
 
     def check_admin_pass(e=None):
-        pw = ft.TextField(
-            label="Senha Admin", 
-            password=True, 
-            can_reveal_password=True, 
-            autofocus=True,
-            on_submit=lambda _: validar(None)
-        )
-        
+        pw = ft.TextField(label="Senha", password=True, text_align="center", border_radius=10)
         def validar(e):
             if pw.value == "production26":
-                dlg.open = False # FECHA O ESTADO DO DIÁLOGO
-                page.update()    # FORÇA A REMOÇÃO VISUAL DO OVERLAY
-                show_admin()     # CARREGA A TELA DE ADMINISTRAÇÃO
+                dlg.open = False
+                page.update()
+                show_admin()
             else:
                 pw.error_text = "Senha Incorreta"
                 page.update()
 
-        def cancelar(e):
-            dlg.open = False
-            page.navigation_bar.selected_index = current_nav_index
-            page.update()
-
         dlg = ft.AlertDialog(
             title=ft.Text("Acesso Restrito"),
-            content=ft.Column([
-                ft.Text("Digite a senha de produção para gerenciar os itens."),
-                pw
-            ], tight=True),
-            actions=[
-                ft.TextButton("Entrar", on_click=validar),
-                ft.TextButton("Cancelar", on_click=cancelar, icon=ft.Icons.CLOSE, icon_color="red")
-            ],
-            modal=True
+            content=ft.Container(content=pw, height=70),
+            actions=[ft.TextButton("Entrar", on_click=validar)],
+            actions_alignment="center",
+            shape=ft.RoundedRectangleBorder(radius=15)
         )
         page.open(dlg)
 
@@ -247,90 +452,159 @@ def main(page: ft.Page):
         page.clean()
         page.navigation_bar.selected_index = 2
         
-        def deletar_item(tabela, item_id):
-            cursor = conn.cursor()
-            cursor.execute(f"DELETE FROM {tabela} WHERE id = ?", (item_id,))
-            conn.commit()
-            show_admin()
-
-        def editar_item(tabela, item_id, valor_atual):
-            edit_field = ft.TextField(value=valor_atual, autofocus=True)
-            def salvar_edicao(e):
-                cursor = conn.cursor()
-                coluna = "titulo" if tabela == "rotina_itens" else "nome"
-                cursor.execute(f"UPDATE {tabela} SET {coluna} = ? WHERE id = ?", (edit_field.value, item_id))
-                conn.commit()
-                page.close(dlg_edit)
-                show_admin()
-            dlg_edit = ft.AlertDialog(title=ft.Text("Editar Item"), content=edit_field, actions=[ft.TextButton("Salvar", on_click=salvar_edicao)])
-            page.open(dlg_edit)
-
-        novo_item_input = ft.TextField(label="Nome do Item", expand=True)
-        tipo_item_dd = ft.Dropdown(label="Tipo", expand=True, options=[
-            ft.dropdown.Option("lider", "Líder"), ft.dropdown.Option("maquina", "Máquina"),
+        novo_item_input = ft.TextField(label="Novo Item...", expand=True, border_radius=10)
+        tipo_item_dd = ft.Dropdown(label="Categoria", width=120, border_radius=10, options=[
+            ft.dropdown.Option("lider", "Líder"), ft.dropdown.Option("maquina", "Máq."),
             ft.dropdown.Option("turma", "Turma"), ft.dropdown.Option("rota", "Rota"),
-            ft.dropdown.Option("rotina", "Item de Rotina")
+            ft.dropdown.Option("rotina", "Checklist (Arrastável)")
         ])
 
         def cadastrar(e):
             if not novo_item_input.value or not tipo_item_dd.value: return
+            
+            # Pega a ultima ordem para adicionar no final
             if tipo_item_dd.value == "rotina":
-                conn.cursor().execute("INSERT INTO rotina_itens (titulo) VALUES (?)", (novo_item_input.value,))
+                res = conn.cursor().execute("SELECT MAX(ordem) FROM rotina_itens").fetchone()
+                nova_ordem = (res[0] if res and res[0] is not None else 0) + 1
+                conn.cursor().execute("INSERT INTO rotina_itens (titulo, ordem) VALUES (?, ?)", (novo_item_input.value, nova_ordem))
             else:
-                # CORREÇÃO AQUI: Adicionado o segundo '?' para os dois valores
                 conn.cursor().execute("INSERT INTO opcoes (tipo, nome) VALUES (?, ?)", (tipo_item_dd.value, novo_item_input.value))
             conn.commit()
             novo_item_input.value = ""
+            page.snack_bar = ft.SnackBar(ft.Text("Item adicionado!"), bgcolor="green")
+            page.open(page.snack_bar)
             show_admin()
 
-        def gerar_lista_categoria(tipo):
-            cursor = conn.cursor()
-            col = ft.Column(scroll=ft.ScrollMode.ALWAYS, height=350, spacing=5)
+        def deletar(tabela, id_item):
+            cursor.execute(f"DELETE FROM {tabela} WHERE id=?", (id_item,))
+            conn.commit()
+            show_admin()
+
+        # --- LÓGICA DE DRAG & DROP INTELIGENTE ---
+        def drag_accept(e):
+            try:
+                # Recebe IDs como String e converte
+                src_id = int(e.data)
+                tgt_id = int(e.control.data)
+            except:
+                return # Se der erro na conversão, aborta
+                
+            if src_id == tgt_id: return
+
+            rows = cursor.execute("SELECT id FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
+            ids_atuais = [r[0] for r in rows]
             
+            if src_id in ids_atuais and tgt_id in ids_atuais:
+                src_index = ids_atuais.index(src_id)
+                tgt_index = ids_atuais.index(tgt_id)
+                
+                # Remove da posição atual
+                ids_atuais.remove(src_id)
+                
+                # CORREÇÃO: Verifica se estamos movendo para baixo ou para cima
+                insert_index = ids_atuais.index(tgt_id)
+                
+                if src_index < tgt_index:
+                    # Movendo para baixo: insere DEPOIS do alvo
+                    ids_atuais.insert(insert_index + 1, src_id)
+                else:
+                    # Movendo para cima: insere ANTES do alvo
+                    ids_atuais.insert(insert_index, src_id)
+                
+                # Atualiza ordem no banco
+                for idx, item_id in enumerate(ids_atuais):
+                    cursor.execute("UPDATE rotina_itens SET ordem = ? WHERE id = ?", (idx, item_id))
+                conn.commit()
+                show_admin()
+
+        def lista_simples(tipo):
             if tipo == "rotina":
-                dados = cursor.execute("SELECT id, titulo FROM rotina_itens").fetchall()
-                tabela = "rotina_itens"
-            else:
-                dados = cursor.execute("SELECT id, nome FROM opcoes WHERE tipo=?", (tipo,)).fetchall()
-                tabela = "opcoes"
-
-            for r in dados:
-                col.controls.append(
-                    ft.Container(
+                items_col = ft.Column(spacing=5)
+                dados = cursor.execute("SELECT id, titulo FROM rotina_itens ORDER BY ordem ASC, id ASC").fetchall()
+                
+                for r in dados:
+                    item_id = r[0]
+                    texto = r[1]
+                    
+                    card_content = ft.Container(
                         content=ft.Row([
-                            ft.Text(r[1], expand=True),
-                            ft.IconButton(ft.Icons.EDIT, icon_size=20, on_click=lambda e, i=r[0], v=r[1]: editar_item(tabela, i, v)),
-                            ft.IconButton(ft.Icons.DELETE, icon_size=20, icon_color="red", on_click=lambda e, i=r[0]: deletar_item(tabela, i))
+                            ft.Icon(ft.Icons.DRAG_INDICATOR, color="grey", size=20),
+                            ft.Text(texto, expand=True, size=14),
+                            ft.IconButton(ft.Icons.DELETE, icon_color="red", icon_size=18, on_click=lambda e, i=item_id: deletar("rotina_itens", i))
                         ]),
-                        padding=5, border=ft.border.all(1, ft.Colors.BLACK12), border_radius=5
+                        bgcolor="white", padding=10, border_radius=8, border=ft.border.all(1, ft.Colors.GREY_100),
+                        width=page.width 
                     )
-                )
-            return col
 
-        tabs_admin = ft.Tabs(
+                    draggable = ft.Draggable(
+                        group="rotina_group",
+                        content=card_content,
+                        content_when_dragging=ft.Container(content=card_content, opacity=0.5),
+                        data=item_id, # Passa o ID aqui (Flet converte pra string)
+                    )
+                    
+                    target = ft.DragTarget(
+                        group="rotina_group",
+                        content=draggable,
+                        on_accept=drag_accept,
+                        data=item_id, # ID do alvo
+                    )
+                    
+                    items_col.controls.append(target)
+                return items_col
+
+            else:
+                tabela = "opcoes"
+                sql = f"SELECT id, nome FROM {tabela} WHERE tipo='{tipo}'"
+                items = ft.Column(spacing=5)
+                for r in cursor.execute(sql).fetchall():
+                    items.controls.append(
+                        ft.Container(
+                            content=ft.Row([
+                                ft.Text(r[1], expand=True, size=14),
+                                ft.IconButton(ft.Icons.DELETE, icon_color="red", icon_size=18, on_click=lambda e, i=r[0]: deletar(tabela, i))
+                            ]),
+                            bgcolor="white", padding=10, border_radius=8, border=ft.border.all(1, ft.Colors.GREY_100)
+                        )
+                    )
+                return items
+
+        tabs = ft.Tabs(
             selected_index=0,
             animation_duration=300,
+            indicator_color=ft.Colors.PRIMARY,
+            label_color=ft.Colors.PRIMARY,
+            unselected_label_color="grey",
             tabs=[
-                ft.Tab(text="Líder", icon=ft.Icons.PERSON, content=gerar_lista_categoria("lider")),
-                ft.Tab(text="Máquina", icon=ft.Icons.PRECISION_MANUFACTURING, content=gerar_lista_categoria("maquina")),
-                ft.Tab(text="Turma", icon=ft.Icons.GROUP, content=gerar_lista_categoria("turma")),
-                ft.Tab(text="Rota", icon=ft.Icons.MAP, content=gerar_lista_categoria("rota")),
-                ft.Tab(text="Rotina", icon=ft.Icons.CHECKLIST, content=gerar_lista_categoria("rotina")),
+                ft.Tab(text="Líder", content=lista_simples("lider")),
+                ft.Tab(text="Máq.", content=lista_simples("maquina")),
+                ft.Tab(text="Turma", content=lista_simples("turma")),
+                ft.Tab(text="Rota", content=lista_simples("rota")),
+                ft.Tab(text="Rotina", content=lista_simples("rotina")),
             ],
-            expand=1
+            expand=True
         )
 
         page.add(
-            ft.AppBar(title=ft.Text("Administração"), bgcolor=ft.Colors.RED_100, automatically_imply_leading=False),
-            container_campo(ft.Text("Adicionar Novo", size=18, weight="bold")),
-            container_campo(ft.Row([novo_item_input, tipo_item_dd])),
-            container_campo(ft.ElevatedButton("Salvar Novo Item", on_click=cadastrar, width=page.width, icon=ft.Icons.ADD)),
-            ft.Divider(),
-            container_campo(ft.Text("Gerenciar Itens Existentes", size=18, weight="bold")),
-            ft.Container(content=tabs_admin, padding=10, expand=True),
-            ft.Container(height=60)
+            ft.Container(
+                content=ft.Text("Administração", size=20, weight="bold", color="white"),
+                bgcolor=ft.Colors.PRIMARY,
+                padding=ft.padding.only(left=20, right=20, top=50, bottom=20),
+                width=page.width
+            ),
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([novo_item_input, tipo_item_dd]),
+                    ft.ElevatedButton("Adicionar", on_click=cadastrar, width=page.width, style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY, color="white", shape=ft.RoundedRectangleBorder(radius=10))),
+                    ft.Divider(),
+                    tabs
+                ]),
+                padding=20,
+                expand=True
+            )
         )
 
+    # Inicia no Login
     show_login()
 
 ft.app(target=main)
